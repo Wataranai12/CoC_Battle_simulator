@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoC探索者模擬戦シミュレーター</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+JP:wght@400;700&display=swap');
+        body {
+            font-family: 'Noto Sans JP', 'Inter', sans-serif;
+            background-color: #f7f7f7;
+        }
+        .hp-bar-container {
+            height: 8px;
+            background-color: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+        .hp-bar {
+            height: 100%;
+            transition: width 0.3s ease-in-out, background-color 0.3s ease-in-out;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8 bg-gray-50 min-h-screen">
+
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-3xl font-bold text-center text-red-700 mb-6 border-b-2 pb-2 border-red-200">
+            CoC探索者 模擬戦 (第6版)
+        </h1>
+
+        <!-- データ入力エリア -->
+        <div class="bg-white p-4 rounded-xl shadow-lg border border-gray-200 mb-6">
+            <h2 class="text-lg font-bold text-gray-800 mb-2">探索者データ入力 (JSON形式)</h2>
+            <p class="text-sm text-gray-600 mb-3">カスタムデータをシミュレーションする場合は、JSON配列で入力し「データ読み込み」を押してください。未入力の場合はデフォルトデータを使用します。</p>
+            <textarea id="character-input" rows="5" class="w-full p-2 border border-gray-300 rounded-lg font-mono text-sm" placeholder="例: [{ name: 'キャラ1', dex: 15, ... }, { name: 'キャラ2', ... }]"></textarea>
+            <button id="load-data-button" onclick="initializeGame(true)" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 mt-2">
+                データ読み込み＆リセット
+            </button>
+        </div>
+
+        <!-- ステータス表示エリア -->
+        <div id="status-container" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <!-- キャラクターカードが挿入される -->
+        </div>
+
+        <!-- コントロールとログ -->
+        <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+            <div class="flex flex-col sm:flex-row justify-between items-center mb-4 space-y-3 sm:space-y-0">
+                <p id="round-info" class="text-xl font-semibold text-gray-700"></p>
+                <div class="flex flex-wrap items-center space-x-2">
+                    <!-- ショックロール設定 -->
+                    <div class="flex items-center space-x-2 bg-gray-100 p-2 rounded-lg">
+                        <label for="shock-roll-toggle" class="text-sm font-medium text-gray-700">ショックロール:</label>
+                        <input type="checkbox" id="shock-roll-toggle" class="form-checkbox h-5 w-5 text-red-600 rounded" checked>
+                    </div>
+
+                    <button id="next-round-button" onclick="nextRound()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 disabled:opacity-50">
+                        次ラウンドへ
+                    </button>
+                    <button id="reset-button" onclick="initializeGame(false)" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300">
+                        リセット
+                    </button>
+                    <button id="save-log-button" onclick="saveLog()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 disabled:opacity-50" disabled>
+                        ログ保存 (.txt)
+                    </button>
+                    <button id="analyze-button" onclick="analyzeCombat()" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 disabled:opacity-50" disabled>
+                        ✨ 戦闘分析・解説
+                    </button>
+                </div>
+            </div>
+
+            <!-- ログ表示エリア -->
+            <h2 class="text-xl font-bold text-gray-800 border-b pb-2 mb-2">戦闘ログ</h2>
+            <div id="log-container" class="h-96 bg-gray-100 p-4 rounded-lg overflow-y-auto text-sm space-y-1">
+                <p class="text-gray-500">戦闘開始！「リセット」または「データ読み込み」を行ってください。</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // CoC第6版の探索者データと特殊ルールの定義
+        // NOTE: 毒付き簪は毒 (POT12) の効果として CON×5 失敗で毒状態、液体窒素は CON×5 失敗で次の戦闘技能-20、MA成功はダメージ2倍、銃はFN 99、96以上はファンブル(転倒/次ターン行動不能)。
+        const defaultCharacters = [
+            {
+                name: "早納 煤流 (さの ばいりゅう)",
+                dex: 12, con: 16, hp: 14, db: "1d4", maxHp: 14, isAlive: true,
+                weapons: [
+                    { name: "回避", skill: 94, type: "evade" },
+                    // メイン武器 (MAの自動適用対象)
+                    { name: "肉切り包丁", skill: 90, damage: "1d6", type: "melee", isMain: true }, 
+                    { name: "包丁", skill: 90, damage: "1d4", type: "melee" }, // サブ武器
+                    { name: "マーシャルアーツ", skill: 67, damage: "1d3", type: "ma" }
+                ],
+                combatSkillPenalty: 0, isSkippingTurn: false, isUnconscious: false, isMainWeaponBroken: false
+            },
+            {
+                name: "化野 楓月 (あだしの かづき)",
+                dex: 14, con: 10, hp: 10, db: "0", maxHp: 10, isAlive: true,
+                weapons: [
+                    { name: "回避", skill: 82, type: "evade" },
+                    { name: "仕込み杖", skill: 95, damage: "1d6", type: "melee", isMain: true },
+                    // 故障ナンバー 99
+                    { name: ".38口径オートマチック", skill: 90, damage: "1d10", type: "gun", ammo: 6, maxAmmo: 6, attackCount: 1, isMain: false, malfunction: 99, isBroken: false } 
+                ],
+                isReloading: false, combatSkillPenalty: 0, isSkippingTurn: false, isUnconscious: false
+            },
+            {
+                name: "目伯 晴告 (めじろ はるつぐ)",
+                dex: 14, con: 9, hp: 12, db: "1d4", maxHp: 12, isAlive: true,
+                weapons: [
+                    { name: "回避", skill: 68, type: "evade" },
+                    { name: "簪(ナイフ)", skill: 80, damage: "1d4", type: "melee", isMain: true },
+                    { name: "簪(毒付き)", skill: 80, damage: "1d4", type: "melee", special: "poison" }, 
+                    { name: "簪(投げ)", skill: 71, damage: "1d4", type: "throw", range: 10 },
+                    { name: "簪(投げ毒付き)", skill: 71, damage: "1d4", type: "throw", special: "poison" } 
+                ],
+                combatSkillPenalty: 0, isSkippingTurn: false, isUnconscious: false, isPoisoned: false
+            },
+            {
+                name: "九条(仮) (くじょう)",
+                dex: 11, con: 13, hp: 12, db: "0", maxHp: 12, isAlive: true,
+                weapons: [
+                    { name: "回避", skill: 72, type: "evade" },
+                    { name: "ナイフ", skill: 90, damage: "1d4+2", type: "melee", isMain: true },
+                    { name: "液体窒素", skill: 90, damage: "1d6", type: "throw", special: "nitrogen", isMain: true }
+                ],
+                combatSkillPenalty: 0, isSkippingTurn: false, isUnconscious: false
+            }
+        ];
+
+        let characters = [];
+        let round = 0;
+        let isCombatFinished = false;
+        let fullCombatLog = ""; // ログ保存・分析用の完全ログ
+
+        const logContainer = document.getElementById('log-container');
+        const nextRoundButton = document.getElementById('next-round-button');
+        const roundInfo = document.getElementById('round-info');
+        const saveLogButton = document.getElementById('save-log-button');
+        const analyzeButton = document.getElementById('analyze-button');
+
+        // LLM関連の設定 (APIキーはCanvas環境で自動提供されるため空文字列)
+        const LLM_API_KEY = "";
+        const LLM_MODEL_NAME = "gemini-2.5-flash-preview-09-2025";
+        const LLM_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${LLM_MODEL_NAME}:generateContent?key=${LLM_API_KEY}`;
+
+        // =======================================================================
+        // ユーティリティ関数
+        // =======================================================================
+
+        /**
+         * ユーティリティ関数: ダイスロール
+         * @param {string} diceString - 例: '1d100', '1d4+2', '1d6+1d4'
+         * @returns {object} ロール結果 { total: number, rolls: string }
+         */
+        function rollDice(diceString) {
+            let total = 0;
+            const parts = diceString.split('+');
+            const rolls = [];
+
+            for (const part of parts) {
+                const cleanPart = part.trim().toLowerCase();
+                if (cleanPart.includes('d')) {
+                    const [count, sides] = cleanPart.split('d').map(Number);
+                    for (let i = 0; i < count; i++) {
+                        const roll = Math.floor(Math.random() * sides) + 1;
+                        total += roll;
+                        rolls.push(`${roll}(${count}d${sides})`);
+                    }
+                } else if (cleanPart) {
+                    const number = Number(cleanPart);
+                    total += number;
+                    rolls.push(`${number}`);
+                }
+            }
+
+            return { total, rolls: rolls.join('+') };
+        }
+
+        /**
+         * ログメッセージをUIに追加
+         * @param {string} message - 表示するメッセージ
+         * @param {string} type - 'info', 'success', 'error', 'damage', 'special', 'death', 'llm'
+         * @param {boolean} isLLM - LLM分析ログかどうか
+         */
+        function logMessage(message, type = 'info') {
+            const logItem = document.createElement('p');
+            logItem.classList.add('p-2', 'rounded-lg', 'text-gray-800', 'leading-relaxed');
+
+            switch (type) {
+                case 'success':
+                    logItem.classList.add('bg-green-100', 'text-green-800', 'font-semibold');
+                    break;
+                case 'damage':
+                    logItem.classList.add('bg-red-100', 'text-red-800', 'font-semibold');
+                    break;
+                case 'special':
+                    logItem.classList.add('bg-yellow-100', 'text-yellow-800', 'font-semibold');
+                    break;
+                case 'error':
+                    logItem.classList.add('bg-red-200', 'text-red-900', 'font-bold');
+                    break;
+                case 'death':
+                    logItem.classList.add('bg-red-500', 'text-white', 'font-bold', 'text-lg');
+                    break;
+                case 'llm':
+                    logItem.classList.add('bg-purple-100', 'text-purple-800', 'font-bold', 'border-l-4', 'border-purple-500');
+                    break;
+                case 'info':
+                default:
+                    logItem.classList.add('bg-gray-200');
+                    break;
+            }
+
+            const prefix = {
+                success: '✅ 成功:',
+                damage: '💥 攻撃:',
+                special: '✨ 特殊:',
+                error: '🚨 エラー:',
+                death: '💀 戦闘不能:',
+                llm: '🗣️ GM解説:',
+                info: '➡️'
+            }[type];
+
+            logItem.innerHTML = `<span class="font-bold">${prefix}</span> ${message}`;
+            logContainer.appendChild(logItem); // ログを下に追加
+            logContainer.scrollTop = logContainer.scrollHeight; // スクロールを一番下に
+            
+            // 完全ログにも追加（UI表示用タグは削除）
+            const plainMessage = logItem.textContent || logItem.innerText;
+            fullCombatLog += plainMessage + '\n';
+        }
+
+        /**
+         * ステータス表示を更新
+         */
+        function updateStatus() {
+            const container = document.getElementById('status-container');
+            container.innerHTML = '';
+            characters.forEach(char => {
+                const hpPercent = char.hp <= 0 ? 0 : Math.min(100, (char.hp / char.maxHp) * 100);
+                let hpColor = 'bg-green-500';
+                if (hpPercent <= 50) hpColor = 'bg-yellow-500';
+                if (hpPercent <= 20) hpColor = 'bg-red-500';
+
+                const statusClass = char.isAlive ? 'border-green-400' : 'border-red-400 opacity-50';
+                const statusText = char.isAlive ? '生存中' : '戦闘不能';
+
+                // 回避技能値を取得
+                const evadeWeapon = char.weapons.find(w => w.type === 'evade');
+                const evadeSkill = evadeWeapon ? evadeWeapon.skill : 0;
+
+                // 状態表示
+                const stateIndicators = [];
+                if (char.combatSkillPenalty !== 0) stateIndicators.push(`<span class="text-red-600 font-bold">技能-20</span>`);
+                if (char.isReloading) stateIndicators.push(`<span class="text-yellow-600 font-bold">リロード中</span>`);
+                if (char.isPoisoned) stateIndicators.push(`<span class="text-purple-600 font-bold">毒状態</span>`);
+                if (char.isSkippingTurn) stateIndicators.push(`<span class="text-orange-600 font-bold">行動不能</span>`);
+                if (char.isUnconscious) stateIndicators.push(`<span class="text-red-700 font-bold">気絶</span>`);
+
+                const stateText = stateIndicators.length > 0 ? stateIndicators.join(' / ') : '正常';
+
+                // 使用可能な戦闘オプションを抽出
+                const combatOptions = char.weapons
+                    .filter(w => w.isMain || w.type === 'ma' || w.special === 'nitrogen' || w.special === 'poison' || w.type === 'gun' || w.type === 'throw')
+                    .map(w => {
+                        let skill = w.skill !== undefined ? w.skill : "N/A";
+                        let actualSkill = skill;
+                        if (w.type !== 'evade') {
+                            actualSkill = (w.skill || 0) + char.combatSkillPenalty;
+                        }
+                        
+                        let info = '';
+                        if (w.type === 'gun') {
+                            if (w.isBroken) {
+                                info = `: <span class="text-sm text-red-500">故障 (FN: ${w.malfunction})</span>`;
+                            } else if (w.ammo !== undefined) {
+                                info = ` (${w.ammo}/${w.maxAmmo} 弾)`;
+                            }
+                        } else if (w.special === 'poison') {
+                            info = ` (毒付与)`;
+                        } else if (w.special === 'nitrogen') {
+                            info = ` (技能-20デバフ)`;
+                        }
+                        
+                        return `${w.name} (${actualSkill}%)` + info;
+                    })
+                    .join(' / ');
+
+                const cardHtml = `
+                    <div class="bg-white p-4 rounded-lg shadow-md border-b-4 ${statusClass}">
+                        <h3 class="text-lg font-bold text-gray-800">${char.name} <span class="text-sm font-normal text-gray-500">(${statusText})</span></h3>
+                        <p class="text-sm text-gray-600">DEX: ${char.dex} / CON: ${char.con} / DB: +${char.db}</p>
+                        <p class="text-sm text-gray-600">回避: ${evadeSkill}%</p>
+                        <p class="text-sm text-gray-600">状態: ${stateText}</p>
+                        <p class="text-sm text-gray-600">戦闘オプション: ${combatOptions}</p>
+                        
+                        <!-- HPバー -->
+                        <div class="mt-2">
+                            <div class="text-xs font-mono">${char.hp}/${char.maxHp} HP</div>
+                            <div class="hp-bar-container">
+                                <div class="hp-bar ${hpColor}" style="width: ${hpPercent}%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += cardHtml;
+            });
+
+            roundInfo.textContent = `ラウンド: ${round}`;
+        }
+
+        // =======================================================================
+        // 戦闘ロジック
+        // =======================================================================
+
+        /**
+         * 攻撃対象をランダムに選択（自分自身と戦闘不能者を除く）
+         * @param {object} attacker - 攻撃者オブジェクト
+         * @param {Array<object>} allCharacters - 全ての探索者オブジェクトの配列
+         * @returns {object | null} ターゲットオブジェクト
+         */
+        function selectTarget(attacker, allCharacters) {
+            const potentialTargets = allCharacters.filter(c => c.name !== attacker.name && c.isAlive);
+            if (potentialTargets.length === 0) return null;
+            
+            // 1d4でチョイスというルールだが、生存者が少ない場合はその中から均等にランダム選択
+            const index = Math.floor(Math.random() * potentialTargets.length);
+            return potentialTargets[index];
+        }
+        
+        /**
+         * ダメージロールとDB加算/減算
+         * @param {string} damageString - 基本ダメージダイス文字列 (例: '1d6', '1d4+2')
+         * @param {string} dbString - DBダイス文字列 (例: '1d4', '0')
+         * @param {boolean} isMelee - 近接攻撃かどうか
+         * @returns {object} 最終ダメージ { totalDamage: number, detail: string }
+         */
+        function calculateDamage(damageString, dbString, isMelee = true) {
+            const baseDamage = rollDice(damageString);
+            let dbDamage = 0;
+            
+            // 近接攻撃 (melee/ma) でDBが設定されている場合のみ加算
+            if (isMelee && dbString !== "0") {
+                dbDamage = rollDice(dbString).total;
+            }
+
+            const totalDamage = baseDamage.total + dbDamage;
+            return { totalDamage, detail: `${baseDamage.rolls}${dbDamage > 0 ? ` + DB(${dbDamage})` : ''}` };
+        }
+
+        /**
+         * ショックロール判定
+         * @param {object} target - ターゲット
+         * @param {number} damageTaken - 受けたダメージ
+         */
+        function checkShockRoll(target, damageTaken) {
+            const shockRollToggle = document.getElementById('shock-roll-toggle');
+            if (!shockRollToggle.checked) return; // ショックロールが無効ならスキップ
+
+            const halfHp = target.maxHp / 2;
+            if (damageTaken >= halfHp) {
+                logMessage(`${target.name} は一撃で最大HPの半分 (${halfHp}) 以上のダメージ (${damageTaken}) を受けたため、ショックロールを行います (CON×5: ${target.con * 5}%)。`, 'special');
+                const conRoll = rollDice('1d100').total;
+                const conCheck = target.con * 5;
+
+                if (conRoll > conCheck) {
+                    // 失敗 -> 気絶と戦闘不能
+                    target.isUnconscious = true;
+                    target.isAlive = false; // 気絶は即戦闘不能とするハウスルール
+                    logMessage(`CON×5判定 (${conCheck}%) に失敗 (D100: ${conRoll})。 ${target.name} は気絶し、戦闘不能となりました！`, 'death');
+                } else {
+                    // 成功
+                    logMessage(`CON×5判定 (${conCheck}%) に成功 (D100: ${conRoll})。耐えきった！`, 'success');
+                }
+            }
+        }
+
+        /**
+         * 特殊効果判定（液体窒素/毒）
+         * @param {object} target - ターゲット
+         * @param {string} type - 'nitrogen' or 'poison'
+         */
+        function checkSpecialEffect(target, type) {
+            const conCheck = target.con * 5;
+            logMessage(`${target.name} は ${type === 'nitrogen' ? '液体窒素' : '毒'} による特殊効果判定を行います (CON×5: ${conCheck}%)。`, 'special');
+            
+            // ロールに指数的バックオフを適用
+            async function retryConRoll(retries = 0) {
+                const conRoll = rollDice('1d100').total;
+
+                if (conRoll > conCheck) {
+                    // 失敗
+                    if (type === 'nitrogen') {
+                        target.combatSkillPenalty = -20;
+                        logMessage(`CON×5判定 (${conCheck}%) に失敗 (D100: ${conRoll})。次のラウンド、戦闘技能に<span class="text-red-600 font-bold">-20</span>のペナルティ！`, 'special');
+                    } else if (type === 'poison') {
+                        target.isPoisoned = true;
+                        // 毒の効果は単純化のため、ここでは状態付与のみ。
+                        logMessage(`CON×5判定 (${conCheck}%) に失敗 (D100: ${conRoll})。${target.name} は<span class="text-purple-600 font-bold">毒状態</span>になりました！`, 'special');
+                    }
+                } else {
+                    // 成功
+                    logMessage(`CON×5判定 (${conCheck}%) に成功 (D100: ${conRoll})。ペナルティなし。`, 'success');
+                }
+            }
+
+            // 非同期で実行
+            retryConRoll();
+        }
+
+        /**
+         * 攻撃処理
+         * @param {object} attacker - 攻撃者
+         * @param {object} target - ターゲット
+         * @param {object} weapon - 使用武器
+         */
+        function performAttack(attacker, target, weapon) {
+            let log = `${attacker.name} が ${target.name} へ ${weapon.name} で攻撃。`;
+
+            // 実際の技能値 (デバフ適用)
+            const actualSkill = (weapon.skill || 0) + attacker.combatSkillPenalty;
+
+            const d100 = rollDice('1d100').total;
+            log += ` D100ロール: ${d100} (目標値: ${actualSkill}%)。`;
+
+            // ファンブル判定 (96以上)
+            if (d100 >= 96) {
+                logMessage(`${log} <span class="text-orange-600 font-bold">ファンブル！</span> 攻撃失敗。転倒して自分に1ダメージを受け、次のターンは行動不能になります。`, 'error');
+                attacker.hp = Math.max(0, attacker.hp - 1);
+                attacker.isSkippingTurn = true;
+                if (attacker.hp <= 0 && attacker.isAlive) {
+                    attacker.isAlive = false;
+                    logMessage(`${attacker.name} は自滅により戦闘不能となりました。`, 'death');
+                }
+                return;
+            }
+
+            // 成功判定
+            const isCritical = d100 <= actualSkill && d100 <= 5; // クリティカル: 技能値以下 かつ 5以下
+            const isSuccess = d100 <= actualSkill;
+
+            let finalDamage = 0;
+            let damageDetails = "";
+            let damageMultiplier = 1;
+            let targetEvaded = false;
+
+            if (isSuccess) {
+                log += `<span class="text-green-600 font-bold">${isCritical ? 'クリティカル成功' : '成功'}</span>。`;
+                
+                // クリティカルの場合、回避不可、ダメージ2倍
+                if (isCritical) {
+                    log += `<span class="text-red-600 font-bold">ターゲットは回避できません！</span> ダメージ2倍！`;
+                    damageMultiplier = 2;
+                } else {
+                    // 通常成功の場合、回避判定
+                    const evadeWeapon = target.weapons.find(w => w.type === 'evade');
+                    const evadeSkill = evadeWeapon ? evadeWeapon.skill : 0;
+                    const evadeD100 = rollDice('1d100').total;
+                    log += ` ${target.name} は回避 (${evadeSkill}%) を試みます (D100: ${evadeD100})。`;
+
+                    if (evadeD100 <= evadeSkill) {
+                        targetEvaded = true;
+                        logMessage(`${log} <span class="text-green-600 font-bold">回避成功！</span> ダメージを受けません。`, 'success');
+                        return; // 攻撃終了
+                    } else {
+                        log += `<span class="text-red-600 font-bold">回避失敗。</span>`;
+                    }
+                }
+
+                // 攻撃命中 (回避失敗 or クリティカル)
+                const damageRoll = calculateDamage(weapon.damage, attacker.db, weapon.type === 'melee' || weapon.type === 'ma');
+                finalDamage = damageRoll.totalDamage;
+                damageDetails = damageRoll.detail;
+
+                // 早納 煤流のMA処理 (近接攻撃のみ)
+                if (attacker.name.includes("早納 煤流") && (weapon.type === 'melee' || weapon.type === 'throw')) {
+                    const maWeapon = attacker.weapons.find(w => w.name === "マーシャルアーツ");
+                    if (maWeapon) {
+                        const maD100 = rollDice('1d100').total;
+                        log += ` MA判定 (${maWeapon.skill}%) (D100: ${maD100})。`;
+                        if (maD100 <= maWeapon.skill) {
+                            damageMultiplier *= 2;
+                            log += `<span class="text-yellow-600 font-bold">MA成功！</span> ダメージが2倍になります。`;
+                        } else {
+                            log += `MA失敗。`;
+                        }
+                    }
+                }
+
+                finalDamage *= damageMultiplier;
+                target.hp = Math.max(0, target.hp - finalDamage);
+
+                logMessage(`${log} **${finalDamage}** ダメージ！ (元D:${damageDetails} x ${damageMultiplier}) ${target.name} HP: ${target.hp}/${target.maxHp}`, 'damage');
+
+                // ショックロール判定
+                checkShockRoll(target, finalDamage);
+
+                // 特殊効果判定 (攻撃命中時のみ)
+                if (weapon.special === 'nitrogen') {
+                    checkSpecialEffect(target, 'nitrogen');
+                } else if (weapon.special === 'poison') {
+                    checkSpecialEffect(target, 'poison');
+                }
+
+                // 銃のリロード・故障判定
+                if (weapon.type === 'gun') {
+                    weapon.ammo--;
+                    // 故障判定 (99または100で故障)
+                    if (d100 >= weapon.malfunction) {
+                        weapon.isBroken = true;
+                        logMessage(`${weapon.name} は ${d100} を出し、故障 (FN:${weapon.malfunction}) しました。以降使用できません。`, 'error');
+                    } else if (weapon.ammo <= 0) {
+                        attacker.isReloading = true;
+                        logMessage(`${weapon.name} の弾切れ。次のラウンドはリロードに専念します。`, 'special');
+                    }
+                }
+
+                // 戦闘不能チェック
+                if (target.hp <= 0 && target.isAlive) {
+                    target.isAlive = false;
+                    logMessage(`${target.name} は力尽き、戦闘不能となりました。`, 'death');
+                }
+
+            } else {
+                // 攻撃失敗 (通常失敗)
+                logMessage(`${log} <span class="text-red-600 font-bold">失敗。</span> 攻撃は外れました。`, 'error');
+            }
+        }
+
+        /**
+         * 1ラウンドの戦闘処理
+         */
+        function nextRound() {
+            if (isCombatFinished) {
+                logMessage('戦闘は終了しました。リセットしてください。', 'info');
+                return;
+            }
+
+            round++;
+            logMessage(`======== ラウンド ${round} 開始 ========`, 'info');
+
+            // 1. ラウンド開始時の処理 (デバフ解除、リロード、行動不能解除)
+            characters.filter(c => c.isAlive).forEach(char => {
+                // 液体窒素デバフ解除 (適用は1ターンのみ)
+                char.combatSkillPenalty = 0; 
+                
+                // 毒ダメージ (シンプル化のため、今回は状態付与のみで継続ダメージは省略)
+                
+                // 行動不能解除
+                if (char.isSkippingTurn) {
+                    char.isSkippingTurn = false;
+                    logMessage(`${char.name} は体勢を立て直し、次ラウンドから行動可能です。`, 'info');
+                }
+
+                // リロード処理
+                if (char.isReloading) {
+                    const gun = char.weapons.find(w => w.type === 'gun');
+                    if (gun) {
+                        gun.ammo = gun.maxAmmo;
+                        char.isReloading = false;
+                        logMessage(`${char.name} はリロードを完了しました (${gun.name}: ${gun.maxAmmo}発)。`, 'success');
+                    }
+                }
+            });
+
+            // 2. 行動順の決定 (DEX順、同値はランダム)
+            let activeCharacters = characters.filter(c => c.isAlive);
+            activeCharacters.sort((a, b) => {
+                if (a.dex !== b.dex) {
+                    return b.dex - a.dex; // DEX降順
+                }
+                return Math.random() - 0.5; // DEX同値はランダム
+            });
+
+            // 3. 各キャラクターの行動
+            for (const attacker of activeCharacters) {
+                if (!attacker.isAlive || attacker.isSkippingTurn || attacker.isReloading) {
+                    if (attacker.isSkippingTurn) {
+                        logMessage(`${attacker.name} はファンブルのペナルティにより、このラウンドは行動できません。`, 'special');
+                    } else if (attacker.isReloading) {
+                        logMessage(`${attacker.name} はリロード中のため、このラウンドは行動できません。`, 'special');
+                    }
+                    continue;
+                }
+
+                const target = selectTarget(attacker, characters);
+                if (!target) break; // ターゲットがいなければ終了
+
+                // 武器選択ロジック
+                let weapon = null;
+                const availableWeapons = attacker.weapons.filter(w => {
+                    if (w.type === 'gun' && (w.isBroken || w.ammo <= 0)) return false;
+                    return w.isMain || w.special;
+                });
+
+                // 早納 煤流: 肉切り包丁 (メイン) 優先
+                if (attacker.name.includes("早納 煤流")) {
+                    weapon = availableWeapons.find(w => w.name === "肉切り包丁");
+                    if (!weapon) weapon = availableWeapons.find(w => w.name === "包丁");
+                    if (!weapon) weapon = availableWeapons.find(w => w.type === 'melee');
+                }
+                // 化野 楓月: 銃が使えれば銃、そうでなければ仕込み杖
+                else if (attacker.name.includes("化野 楓月")) {
+                    const gun = availableWeapons.find(w => w.type === 'gun');
+                    if (gun && !gun.isBroken && gun.ammo > 0) {
+                        weapon = gun;
+                    } else {
+                        weapon = availableWeapons.find(w => w.name === "仕込み杖");
+                    }
+                }
+                // 九条(仮): 液体窒素優先、なければナイフ
+                else if (attacker.name.includes("九条(仮)")) {
+                    weapon = availableWeapons.find(w => w.name === "液体窒素");
+                    if (!weapon) weapon = availableWeapons.find(w => w.name === "ナイフ");
+                }
+                // 目伯 晴告: 毒付き投げ簪優先、なければ通常ナイフ
+                else if (attacker.name.includes("目伯 晴告")) {
+                    weapon = availableWeapons.find(w => w.name === "簪(投げ毒付き)");
+                    if (!weapon) weapon = availableWeapons.find(w => w.name === "簪(毒付き)");
+                    if (!weapon) weapon = availableWeapons.find(w => w.name === "簪(ナイフ)");
+                }
+                
+                // 最終的に武器が見つからなかったら、最初の利用可能な武器を使う
+                if (!weapon && availableWeapons.length > 0) {
+                    weapon = availableWeapons[0];
+                }
+                
+                if (weapon) {
+                    performAttack(attacker, target, weapon);
+                } else {
+                    logMessage(`${attacker.name} は有効な武器がないため、攻撃できませんでした。`, 'error');
+                }
+            }
+
+            // 4. 戦闘終了判定
+            activeCharacters = characters.filter(c => c.isAlive);
+            if (activeCharacters.length <= 1) {
+                isCombatFinished = true;
+                if (activeCharacters.length === 1) {
+                    logMessage(`======== 戦闘終了: 勝者 ${activeCharacters[0].name} ========`, 'death');
+                } else {
+                    logMessage('======== 戦闘終了: 生存者なし (相討ち) ========', 'death');
+                }
+                nextRoundButton.disabled = true;
+                saveLogButton.disabled = false;
+                analyzeButton.disabled = false; // 分析ボタンを有効化
+            }
+
+            updateStatus();
+        }
+
+        // =======================================================================
+        // 初期化・UI関連関数
+        // =======================================================================
+
+        /**
+         * ゲームの初期化
+         * @param {boolean} useInputData - 入力エリアのデータを使用するかどうか
+         */
+        function initializeGame(useInputData = false) {
+            let dataToUse = defaultCharacters;
+            logContainer.innerHTML = '';
+            fullCombatLog = '';
+            
+            if (useInputData) {
+                const inputArea = document.getElementById('character-input').value;
+                try {
+                    const customData = JSON.parse(inputArea);
+                    if (Array.isArray(customData) && customData.every(c => c.name && c.dex)) {
+                        dataToUse = customData;
+                        logMessage('カスタムデータを読み込みました。', 'info');
+                    } else {
+                        logMessage('無効なカスタムデータ形式です。デフォルトデータを使用します。', 'error');
+                    }
+                } catch (e) {
+                    if (inputArea.trim() !== "") {
+                        logMessage('JSONデータの解析に失敗しました。デフォルトデータを使用します。', 'error');
+                        console.error("JSON Parse Error:", e);
+                    }
+                }
+            } else {
+                logMessage('デフォルトデータでリセットしました。', 'info');
+            }
+
+            // ディープコピーして状態をリセット
+            characters = JSON.parse(JSON.stringify(dataToUse));
+            
+            // 状態変数の初期化
+            characters.forEach(char => {
+                char.hp = char.maxHp || char.hp; // HPを最大値に戻す
+                char.isAlive = true;
+                char.isReloading = false;
+                char.combatSkillPenalty = 0;
+                char.isSkippingTurn = false;
+                char.isUnconscious = false;
+                char.isPoisoned = false;
+
+                // 銃の状態リセット
+                const gun = char.weapons.find(w => w.type === 'gun');
+                if (gun) {
+                    gun.isBroken = false;
+                    gun.ammo = gun.maxAmmo;
+                }
+            });
+
+            round = 0;
+            isCombatFinished = false;
+            nextRoundButton.disabled = false;
+            saveLogButton.disabled = true;
+            analyzeButton.disabled = true;
+
+            updateStatus();
+        }
+
+        /**
+         * ログをテキストファイルとして保存
+         */
+        function saveLog() {
+            if (fullCombatLog.trim() === "") {
+                logMessage('保存するログがありません。', 'error');
+                return;
+            }
+
+            const blob = new Blob([fullCombatLog], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `CoC_battle_log_R${round}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            logMessage('戦闘ログを保存しました。', 'success');
+        }
+
+        /**
+         * LLMを使用して戦闘を分析・解説
+         */
+        async function analyzeCombat() {
+            if (!isCombatFinished || fullCombatLog.trim() === "") {
+                logMessage('戦闘が終了しているか、ログが存在しません。', 'error');
+                return;
+            }
+
+            const log = fullCombatLog;
+            analyzeButton.disabled = true;
+            analyzeButton.textContent = '分析中...';
+            
+            // LLMへのプロンプト設定
+            const systemPrompt = `あなたはクトゥルフ神話TRPGの熟練ゲームマスターです。提供された戦闘ログを分析し、以下の点を盛り込んだ、ドラマチックで物語性のある解説を日本語で行ってください。
+1. 戦いのクライマックスや転機となった瞬間。
+2. クリティカルやファンブルなどのダイスロールの運命的な影響。
+3. 液体窒素、毒、MAなどの特殊な攻撃が戦闘に与えた影響。
+4. 最終的な勝者と敗因の考察。
+解説は一つのまとまった段落で構成し、感情豊かに語りかけてください。`;
+
+            const userQuery = `戦闘ログ: \n\n${log}\n\nこの戦闘を解説してください。`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            const maxRetries = 3;
+            let currentRetry = 0;
+
+            const fetchAnalysis = async () => {
+                try {
+                    const response = await fetch(LLM_API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    const analysisText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                    if (analysisText) {
+                        logMessage('GM解説の生成に成功しました。', 'info');
+                        logMessage(analysisText, 'llm');
+                    } else {
+                        logMessage('GM解説の生成に失敗しました。AIからの応答がありませんでした。', 'error');
+                    }
+                } catch (error) {
+                    console.error("LLM API Error:", error);
+                    if (currentRetry < maxRetries) {
+                        currentRetry++;
+                        const delay = Math.pow(2, currentRetry) * 1000; // 1s, 2s, 4s...
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        return fetchAnalysis();
+                    } else {
+                        logMessage('戦闘分析の取得に失敗しました (APIエラー)。', 'error');
+                    }
+                } finally {
+                    analyzeButton.disabled = false;
+                    analyzeButton.textContent = '✨ 戦闘分析・解説';
+                }
+            };
+            
+            fetchAnalysis();
+        }
+
+        // 初期ロード時にゲームを初期化
+        window.onload = () => {
+            initializeGame(false);
+        };
+    </script>
+</body>
+</html>
